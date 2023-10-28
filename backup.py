@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 import os
+import json
 
 from typing import List, Dict, Optional
 
@@ -19,7 +20,7 @@ import kr8s
 from kr8s.objects import Pod, Secret, PersistentVolume, PersistentVolumeClaim
 
 DRY_RUN = False
-BACKUP_NAMESPACE = "kube-vol-backup"
+BACKUP_NAMESPACE = "kub-vol-bak"
 BACKUP_SECRET_NAME = "backup-credentials"
 BACKUP_IMAGE = "docker.io/restic/restic:0.16.0"
 VOLUME_BACKUP_TIMEOUT = 3600 # 1h
@@ -29,6 +30,7 @@ EXECUTION_ID = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 # https://velero.io/docs/v1.9/restic/
 
 def run_backup_pod(pod_name, node_name, node_path, rbc):
+    # TODO: implement resource requests/limits, nice/ionice
     pod = Pod({
         "apiVersion": "v1",
         "kind": "Pod",
@@ -64,7 +66,7 @@ def run_backup_pod(pod_name, node_name, node_path, rbc):
     })
 
     if DRY_RUN:
-       print(pod.spec)
+       print(json.dumps(pod.raw))
        return
 
     # launch pod
@@ -165,9 +167,9 @@ def build_restic_cmd(bc) -> List[str]:
     if bc.exclude_caches:
         restic_cmd += " --exclude-caches"
     for e in bc.excludes:
-        restic_cmd += f" --exclude={e}"
+        restic_cmd += f" --exclude {e}"
     for t in bc.tags:
-        restic_cmd += f" --tag={t}"
+        restic_cmd += f" --tag {t}"
 
     cmd.append(restic_cmd)
 
@@ -257,8 +259,8 @@ def backup_any_pvc(pvc):
     if not DRY_RUN:
         pvc.annotate({"last-successful-backup-timestamp": datetime.now().isoformat()})
 
-def backup_all_pvcs():
-    pvcs = kr8s.get("persistentvolumeclaims", namespace=kr8s.ALL)
+def backup_all_pvcs(pvc_label_selectors):
+    pvcs = kr8s.get("persistentvolumeclaims", namespace=kr8s.ALL, label_selector=pvc_label_selectors)
     for pvc in pvcs:
         backup_any_pvc(pvc)
 
@@ -283,10 +285,20 @@ def main(args):
     VOLUME_BACKUP_TIMEOUT = args.volume_backup_timeout
 
     global BACKUP_IMAGE
-    BACKUP_IMAGE = args.backup_image
+    BACKUP_IMAGE = args.image
+
+    pvc_label_selectors: Dict[str,str]= {}
+    if args.pvc_label_selector:
+        labels = args.pvc_label_selector.split(",")
+        for l in labels:
+            parts = l.split("=", maxsplit=1)
+            if len(parts) == 2:
+                pvc_label_selectors[parts[0]] = parts[1]
+            else:
+                pvc_label_selectors[parts[0]] = ""
 
     if args.action == "backup":
-        backup_all_pvcs()
+        backup_all_pvcs(pvc_label_selectors)
 
         if args.cleanup:
             for pod in kr8s.get("pods", namespace=BACKUP_NAMESPACE, label_selector=get_common_labels()):
@@ -321,6 +333,7 @@ if __name__ == "__main__":
     parser.add_argument("--namespace",
                         action="store",
                         help="The namespace in which backup jobs should be run.",
+                        default=BACKUP_NAMESPACE,
                         )
 
     parser.add_argument("--execution-id",
@@ -351,6 +364,11 @@ if __name__ == "__main__":
                         action="store",
                         help="The image that should be used for the backup-runner pod (must contain at least restic binary and a shell).",
                         default=BACKUP_IMAGE,
+                        )
+
+    parser.add_argument("--pvc-label-selector",
+                        action="store",
+                        help="Additional filtering that should be applied to find candidate PVCs",
                         )
 
     # # Optional verbosity counter (eg. -v, -vv, -vvv, etc.)
