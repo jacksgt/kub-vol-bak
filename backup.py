@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 
+__author__ = "Jack Henschel"
+__version__ = "0.1.0"
+__license__ = "MIT"
+
+import argparse
 from base64 import b64decode, b64encode
 import subprocess # see also: https://pypi.org/project/python-shell/
 import time
@@ -13,13 +18,12 @@ from typing import List, Dict, Optional
 import kr8s
 from kr8s.objects import Pod, Secret, PersistentVolume, PersistentVolumeClaim
 
-DRY_RUN = True
-BACKUP_NAMESPACE = "kube-backup"
+DRY_RUN = False
+BACKUP_NAMESPACE = "kube-vol-backup"
 BACKUP_SECRET_NAME = "backup-credentials"
-RESTIC_IMAGE = "docker.io/restic/restic:0.16.0"
-BACKUP_TIMEOUT = 3600 # 1h
-EXECUTION_ID = 1234
-CLEANUP = False
+BACKUP_IMAGE = "docker.io/restic/restic:0.16.0"
+VOLUME_BACKUP_TIMEOUT = 3600 # 1h
+EXECUTION_ID = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 # Restic integration can only backup volumes that are mounted by a pod and not directly from the PVC. For orphan PVC/PV pairs (without running pods), some Velero users overcame this limitation running a staging pod (i.e. a busybox or alpine container with an infinite sleep) to mount these PVC/PV pairs prior taking a Velero backup.
 # https://velero.io/docs/v1.9/restic/
@@ -31,16 +35,13 @@ def run_backup_pod(pod_name, node_name, node_path, rbc):
         "metadata": {
             "name": pod_name,
             "namespace": BACKUP_NAMESPACE,
-            "labels": {
-                "app.kubernetes.io/name": "backup-runner",
-                "app.kubernetes.io/instance": f"{EXECUTION_ID}",
-            },
+            "labels": get_common_labels(),
         },
         "spec": {
             "serviceAccountName": "backup-runner",
             "containers": [{
                 "name": "restic",
-                "image": RESTIC_IMAGE,
+                "image": BACKUP_IMAGE,
                 "volumeMounts": [
                     {"name": "data", "mountPath": "/data", "readOnly": True},
                     {"name": "tmp", "mountPath": "/tmp", "readOnly": False},
@@ -55,7 +56,7 @@ def run_backup_pod(pod_name, node_name, node_path, rbc):
             ],
             # "terminationGracePeriodSeconds": 5,
             "restartPolicy": "Never",
-            "activeDeadlineSeconds": BACKUP_TIMEOUT,
+            "activeDeadlineSeconds": VOLUME_BACKUP_TIMEOUT,
             "enableServiceLinks": False,
             "nodeName": node_name,
             "automountServiceAccountToken": False,
@@ -69,11 +70,11 @@ def run_backup_pod(pod_name, node_name, node_path, rbc):
     # launch pod
     pod.create()
 
-    # pod.ready()
-    time.sleep(5)
+    time.sleep(1)
+    pod.wait("condition=Ready")
 
     for line in pod.logs(follow=True, timeout=None):
-        print(line)
+        print("> ", line)
 
     pod.refresh()
     print(f"Pod {pod.name} terminated: {pod.status.phase}")
@@ -151,21 +152,13 @@ def backup_hostpath_volume(pv, rbc, pvc_name):
 
     # lookup the nodeAffinity and parent pvc
     node_name = get_node_from_pv(pv) # better use volume.kubernetes.io/selected-node annotation on pvc?
-    # namespace, pvc_name = get_pvc_from_pv(pv)
-    # pvc = PersistentVolumeClaim(pvc_name, namespace=namespace)
 
     # run pod on the node mounting hostPath
-    pod = run_backup_pod(f"backup-{pvc_name}", node_name, path, rbc)
+    run_backup_pod(f"backup-{pvc_name}", node_name, path, rbc)
 
-    # run backup for it
-    # backup_cmd = build_restic_cmd(bc)
-    # pod_exec(pod, "restic", backup_cmd)
 
 def build_restic_cmd(bc) -> List[str]:
     cmd = ["sh", "-cex"]
-
-    # https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html
-    # cmd += "if ! restic snapshots 2>&1 >/dev/null; then restic init; fi;"
 
     # https://restic.readthedocs.io/en/stable/040_backup.html
     restic_cmd = f"restic backup --one-file-system --host {bc.hostname} --no-scan /data"
@@ -203,18 +196,26 @@ def initialize_repo():
     if not DRY_RUN:
          subprocess.run(["restic init --no-cache"], shell=True, check=True, env=env)
 
-def backup_all_pvcs():
-    pvcs = kr8s.get("persistentvolumeclaims", namespace=kr8s.ALL)
-    for pvc in pvcs:
-        backup_any_pvc(pvc)
+def get_pod_mounting_pvc(pvc):
+    # iterate over all running pods in the same namespace as the PVC
+    for pod in kr8s.get("pods", namespace=pvc.namespace, field_selector="status.phase=Running"):
+        # check for matching 'volume'
+        for volume in pod.spec.volumes:
+            if hasattr(volume, "persistentVolumeClaim") and \
+               hasattr(volume.persistentVolumeClaim, "claimName") and \
+               volume.persistentVolumeClaim.claimName == pvc.name:
+                # return the first match
+                return pod
 
-    if CLEANUP:
-        for pod in kr8s.get("pods", namespace=BACKUP_NAMESPACE, label_selector={
-            "app.kubernetes.io/name": "backup-runner",
-            "app.kubernetes.io/instance": EXECUTION_ID,
-            }):
-            pod.delete()
+def get_pv_for_pvc(pvc):
+    pv = PersistentVolume.get(pvc.spec.volumeName)
+    return pv
 
+def get_common_labels():
+    return {
+        "app.kubernetes.io/name": "kub-vol-bak",
+        "app.kubernetes.io/instance": f"{EXECUTION_ID}",
+    }
 
 # support for PVCs that are (in order):
 # - backed by a "local" PV
@@ -253,108 +254,117 @@ def backup_any_pvc(pvc):
     else:
         raise Exception(f"Unable to determine backup strategy for PVC {pvc.namespace}/{pvc.name}")
 
-    pvc.annotate({"last-successful-backup-timestamp": datetime.now().isoformat()})
+    if not DRY_RUN:
+        pvc.annotate({"last-successful-backup-timestamp": datetime.now().isoformat()})
 
-def get_pod_mounting_pvc(pvc):
-    # iterate over all running pods in the same namespace as the PVC
-    for pod in kr8s.get("pods", namespace=pvc.namespace, field_selector="status.phase=Running"):
-        # check for matching 'volume'
-        for volume in pod.spec.volumes:
-            if hasattr(volume, "persistentVolumeClaim") and \
-               hasattr(volume.persistentVolumeClaim, "claimName") and \
-               volume.persistentVolumeClaim.claimName == pvc.name:
-                # return the first match
-                return pod
+def backup_all_pvcs():
+    pvcs = kr8s.get("persistentvolumeclaims", namespace=kr8s.ALL)
+    for pvc in pvcs:
+        backup_any_pvc(pvc)
 
-def get_pv_for_pvc(pvc):
-    pv = PersistentVolume.get(pvc.spec.volumeName)
-    return pv
-
-SKIP_REPO_INIT = True
-if __name__ == "__main__":
-    if DRY_RUN is True:
+def main(args):
+    if args.dry_run is True:
         print("RUNNING ALL OPERATIONS IN DRY-RUN MODE")
-    if not SKIP_REPO_INIT:
+        global DRY_RUN
+        DRY_RUN = True
+
+    if args.skip_repo_init is True:
+        print("Warning: skipping repository initialization")
+    else:
         initialize_repo()
-    backup_all_pvcs()
+
+    global BACKUP_NAMESPACE
+    BACKUP_NAMESPACE = args.namespace
+
+    global EXECUTION_ID
+    EXECUTION_ID = args.execution_id
+
+    global VOLUME_BACKUP_TIMEOUT
+    VOLUME_BACKUP_TIMEOUT = args.volume_backup_timeout
+
+    global BACKUP_IMAGE
+    BACKUP_IMAGE = args.backup_image
+
+    if args.action == "backup":
+        backup_all_pvcs()
+
+        if args.cleanup:
+            for pod in kr8s.get("pods", namespace=BACKUP_NAMESPACE, label_selector=get_common_labels()):
+                pod.delete()
+    else:
+        print(f"Error: unsupported action '{args.action}'")
+        sys.exit(1)
 
 
 
-############
+if __name__ == "__main__":
+    """ This is executed when run from the command line """
+    parser = argparse.ArgumentParser()
 
+    parser.add_argument("action",
+                        help="One of: backup, ",
+                        default="backup",
+                        )
 
-# def backup_hostpath_volumes(node: str):
-#     # get all pvs that have spec.hostPath
-#     pv_list = kr8s.get("pvs", kr8s.ALL)
-#     hostpath_pvs = [pv for pv in pv_list if pv.spec.hostPath]
+    parser.add_argument("--dry-run",
+                        action="store_true",
+                        help="Do not perform any actions, only simulate them.",
+                        default=False,
+                        )
 
-#     for pv in hostpath_pvs:
-#         backup_hostpath_volume(pv)
-#     return
+    parser.add_argument("--skip-repo-init",
+                        action="store_true",
+                        help="Do not ensure that the repository has been initialized. Only use this when you know what you are doing.",
+                        default=False,
+                        )
 
-# def backup_pvc(pvc):
-#     print(f"Processing PVC {pvc.namespace}/{pvc.name}")
-#     bc = get_backup_config(pvc)
-#     pod, cleanup_func = launch_backup_pod(pvc.namespace, f"backup-{pvc.name}", bc)
-#     run_backup(bc)
-#     # https://restic.readthedocs.io/en/stable/040_backup.html
-#     restic_cmd = "restic backup --one-file-system --no-scan /data"
-#     if bc.exclude_caches:
-#         restic_cmd += " --exclude-caches"
-#     for e in bc.excludes:
-#         restic_cmd += " --exclude={e}"
-#     print(f"Starting backup: {restic_cmd}")
-#     pod_exec(pod, "restic", restic_cmd)
+    parser.add_argument("--namespace",
+                        action="store",
+                        help="The namespace in which backup jobs should be run.",
+                        )
 
-    # cleanup_func()
+    parser.add_argument("--execution-id",
+                        action="store",
+                        help="A unique identifier for this backup job invocation.",
+                        default=EXECUTION_ID,
+                        )
 
-# THIS CAN BE CREATED WITH STATIC MANIFESTS
-# def create_backup_secret(rbc):
-#     secret_data = {
-#         "RESTIC_REPOSITORY": os.environ["RESTIC_REPOSITORY"],
-#         "RESTIC_PASSWORD": os.environ["RESTIC_PASSWORD"],
-#     }
-#     secret = Secret({
-#         "apiVersion": "v1",
-#         "kind": "Secret",
-#         "metadata": {
-#             "name": BACKUP_SECRET_NAME,
-#             "namespace": BACKUP_NAMESPACE,
-#         },
-#         "stringData": secret_data,
-#     })
-#     secret.create()
-#     print(f"Created backup secret {secret.name}")
+    parser.add_argument("--volume-backup-timeout",
+                        action="store",
+                        help="Maximum runtime for the backup of a single volume (in seconds).",
+                        default=VOLUME_BACKUP_TIMEOUT,
+                        )
 
-#     def cleanup():
-#         secret.delete()
+    parser.add_argument("--config-secret",
+                        action="store",
+                        help="Name of the Secret that contains the credentials for connecting to remote repositories and other configuration related to restic.",
+                        default=BACKUP_SECRET_NAME,
+                        )
 
-#     return secret, cleanup
+    parser.add_argument("--cleanup",
+                        action="store_true",
+                        help="Remove backup pods and other temporary resources after successful completion.",
+                        default=True,
+                        )
 
-# @dataclass
-# class BackupConfig:
-#     hostname: str
-#     repository: str
-#     password: str
-#     path: str
-#     # node: str
-#     pv_name: str
-#     hostPath: Optional[str] = None
-#     exclude_caches: bool = True
-#     env_vars: Dict[str,str] = field(default_factory=dict)
-#     excludes: List[str] = field(default_factory=list)
-#     metadata: Dict[str,str] = field(default_factory=dict)
+    parser.add_argument("--image",
+                        action="store",
+                        help="The image that should be used for the backup-runner pod (must contain at least restic binary and a shell).",
+                        default=BACKUP_IMAGE,
+                        )
 
-# def backup_pvcs_mounted_on_node(node_name: str, base_path: str = "/var/lib/kubelet/pods/"):
-#     # run pod on the node mounting base_path
-#     backup_pod_config = {
-#         node: node_name,
-#         mount_host_path: base_path,
-#     }
-#     pod = launch_backup_pod(backup_pod_config)
+    # # Optional verbosity counter (eg. -v, -vv, -vvv, etc.)
+    # parser.add_argument(
+    #     "-v",
+    #     "--verbose",
+    #     action="count",
+    #     default=0,
+    #     help="Verbosity (-v, -vv, etc)")
 
-#     # get mounted pvs
-#     mounted_pvs = pod_exec(pod, "restic", f"find {base_path} -name mount |" + r" sed -r 's|.*\/(pvc-[a-z0-9-]+)\/.*|\1|g' | sort -u")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="%(prog)s (version {version})".format(version=__version__))
 
-#     for pv_name in mounted_pvs:
-#         backup_mounted_pv(pv_name)
+    args = parser.parse_args()
+    main(args)

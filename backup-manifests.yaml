@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: kube-backup
+  name: kube-vol-bak
 ---
 apiVersion: v1
 kind: Secret
 metadata:
   name: backup-credentials
-  namespace: kube-backup
+  namespace: kube-vol-bak
 stringData:
   # https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html
   RESTIC_REPOSITORY: ""
@@ -15,9 +15,10 @@ stringData:
   # more values to be passed as environment variables to restic
   # ...
 ---
+# A service account without additional permissions
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: backup-runner
-  namespace: kube-backup
+  namespace: kube-vol-bak
 automountServiceAccountToken: false
