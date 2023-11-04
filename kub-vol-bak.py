@@ -9,7 +9,7 @@ from base64 import b64decode, b64encode
 import subprocess # see also: https://pypi.org/project/python-shell/
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import json
 
@@ -40,7 +40,7 @@ def run_backup_pod(pod_name, node_name, node_path, rbc):
             "labels": get_common_labels(),
         },
         "spec": {
-            "serviceAccountName": "backup-runner",
+            "serviceAccountName": "kub-vol-bak-runner", # TODO: make this configurable
             "containers": [{
                 "name": "restic",
                 "image": BACKUP_IMAGE,
@@ -49,6 +49,11 @@ def run_backup_pod(pod_name, node_name, node_path, rbc):
                     {"name": "tmp", "mountPath": "/tmp", "readOnly": False},
                 ],
                 "envFrom": [{ "secretRef": {"name": BACKUP_SECRET_NAME }, }, ],
+                "env": [
+                    # show update messages every 5 minutes,
+                    # https://github.com/restic/restic/issues/2706#issuecomment-752182199
+                    {"name": "RESTIC_PROGRESS_FPS", "value":"0.0033"},
+                ],
                 "command": build_restic_cmd(rbc),
                 "terminationMessagePolicy": "FallbackToLogsOnError",
             }],
@@ -79,12 +84,24 @@ def run_backup_pod(pod_name, node_name, node_path, rbc):
         print("> ", line)
 
     pod.refresh()
-    print(f"Pod {pod.name} terminated: {pod.status.phase}")
+    # "2023-11-03T06:17:00Z"
+    duration =  datetime.now() - datetime.strptime(pod.status.startTime, '%Y-%m-%dT%H:%M:%SZ')
+    print(f"Pod {pod.name} terminated after {pretty_time_delta(duration)}: {pod.status.phase}")
 
     def cleanup():
        pod.delete()
 
     return pod, cleanup
+
+def pretty_time_delta(td: timedelta):
+    if td.days > 0:
+        return f"{td.days}d{td.hours}"
+    elif td.hours > 0:
+        return f"{td.hours}h{td.minutes}m"
+    elif td.minutes > 0:
+        return f"{td.minutes}m{td.seconds}s"
+    else:
+        return f"{td.seconds}s"
 
 # https://docs.python.org/3/library/dataclasses.html
 @dataclass
@@ -189,7 +206,7 @@ def initialize_repo():
     # https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html
     print(f"Ensuring repository backend is initialized")
     env = get_env_from_secret(BACKUP_SECRET_NAME, BACKUP_NAMESPACE)
-    proc = subprocess.run(["restic snapshots --no-cache"], shell=True, check=False, env=env)
+    proc = subprocess.run(["restic snapshots --no-cache"], shell=True, check=False, env=env, capture_output=True)
     if proc.returncode == 0:
         print("Repository already initialized")
         return
@@ -282,7 +299,7 @@ def main(args):
     EXECUTION_ID = args.execution_id
 
     global VOLUME_BACKUP_TIMEOUT
-    VOLUME_BACKUP_TIMEOUT = args.volume_backup_timeout
+    VOLUME_BACKUP_TIMEOUT = int(args.volume_backup_timeout)
 
     global BACKUP_IMAGE
     BACKUP_IMAGE = args.image

@@ -1,5 +1,6 @@
 # kub-vol-bak: Simple Kubernetes Volume Backups with Restic
 
+Opinionated, straightforward backups for different Kubernetes volumes types. No CRDs, no daemons.
 
 Disable backups for a PVC: `kubectl annotate pvc/<NAME> backup-enabled=false`
 
