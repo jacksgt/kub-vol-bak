@@ -83,25 +83,44 @@ def run_backup_pod(pod_name, node_name, node_path, rbc):
     for line in pod.logs(follow=True, timeout=None):
         print("> ", line)
 
+    time.sleep(1)
     pod.refresh()
-    # "2023-11-03T06:17:00Z"
-    duration =  datetime.now() - datetime.strptime(pod.status.startTime, '%Y-%m-%dT%H:%M:%SZ')
-    print(f"Pod {pod.name} terminated after {pretty_time_delta(duration)}: {pod.status.phase}")
+
+    duration = get_pod_duration(pod)
+    print(f"Pod {pod.name} terminated after {pretty_duration(duration.total_seconds())}: {pod.status.phase}") # FIXME
 
     def cleanup():
        pod.delete()
 
     return pod, cleanup
 
-def pretty_time_delta(td: timedelta):
-    if td.days > 0:
-        return f"{td.days}d{td.hours}"
-    elif td.hours > 0:
-        return f"{td.hours}h{td.minutes}m"
-    elif td.minutes > 0:
-        return f"{td.minutes}m{td.seconds}s"
+def get_pod_duration(pod) -> timedelta:
+    start_time = parse_k8s_timestamp(pod.status.startTime)
+    condition_ready = []
+    for x in pod.status.conditions:
+        if hasattr(x, 'type') and x['type'] == 'Ready' and hasattr(x, 'status') and x['status'] == 'False':
+            condition_ready.append(x)
+    end_time = parse_k8s_timestamp(condition_ready[0].lastTransitionTime)
+    return end_time - start_time
+
+def parse_k8s_timestamp(timestamp: str) -> datetime:
+    # "2023-11-03T06:17:00Z"
+    return datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%SZ')
+
+def pretty_duration(seconds_f: float):
+    seconds = int(seconds_f)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+
+    if days > 0:
+        return f"{days}d{hours}"
+    elif hours > 0:
+        return f"{hours}h{minutes}m"
+    elif minutes > 0:
+        return f"{minutes}m{seconds}s"
     else:
-        return f"{td.seconds}s"
+        return f"{seconds}s"
 
 # https://docs.python.org/3/library/dataclasses.html
 @dataclass
@@ -236,6 +255,11 @@ def get_common_labels():
         "app.kubernetes.io/instance": f"{EXECUTION_ID}",
     }
 
+def get_excludes_from_pvc(pvc):
+    raw = pvc.annotations.get("backup-excludes-json", "[]")
+    parsed = json.loads(raw)
+    return parsed
+
 # support for PVCs that are (in order):
 # - backed by a "local" PV
 # - backed by a "hostPath" PV
@@ -255,7 +279,8 @@ def backup_any_pvc(pvc):
         hostname = pvc.name,
         # repository = os.environ["RESTIC_REPOSITORY"],
         # password = os.environ["RESTIC_PASSWORD"],
-        tags = [f"namespace={pvc.namespace}", f"persistentvolumeclaim={pvc.name}", f"persistentvolume={pv.name}"]
+        tags = [f"namespace={pvc.namespace}", f"persistentvolumeclaim={pvc.name}", f"persistentvolume={pv.name}"],
+        excludes = get_excludes_from_pvc(pvc),
     )
 
     if hasattr(pv.spec, "local"):
