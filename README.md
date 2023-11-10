@@ -34,7 +34,9 @@ kubectl -n kub-vol-bak create secret generic kub-vol-bak-credentials \
 
 ### Helm
 
-TODO
+A Helm chart is available for deploying the tool with a `CronJob` into a Kubernetes cluster.
+
+TODO: publish as OCI image
 
 ## Set up backup storage backend
 
@@ -68,3 +70,12 @@ Then, `restic` CLI can be used to restore the data locally: <https://restic.read
 ### What does `Exception: Unable to determine backup strategy for PVC namespace/name` mean?
 
 Most likely this means that this PVC is backed by a CSI driver and the volume is currently not mounted on any node. To resolve the issue, spin up a simple pod that uses the PVC, which will force the kubelet to mount the volume on one node.
+
+## TODO
+
+- implement cleanup job
+- publish Helm chart with OCI image
+- add more type annotations
+- improve logging (debug,info,warning,error)
+- setup pylint + mypy
+- add license

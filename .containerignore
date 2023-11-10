@@ -1,0 +1,4 @@
+chart/
+venv/
+__pycache_/
+.git/

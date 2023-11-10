@@ -1,0 +1,9 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "kub-vol-bak.fullname" . }}-restic-config
+data:
+{{- range $key, $value := .Values.resticConfig }}
+  "{{ $key }}": "{{ $value | b64enc }}"
+{{- end }}

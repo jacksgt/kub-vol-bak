@@ -1,5 +1,8 @@
 FROM docker.io/library/debian:12
 
+# Avoid stdout text buffering for Python applications
+ENV PYTHONUNBUFFERED=true
+
 RUN apt update && apt install -y --no-install-recommends \
     bzip2 \
     curl \
