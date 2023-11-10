@@ -57,7 +57,7 @@ The `kub-vol-bak.py` Python tool implements all the application logic:
 
 A particular volume can be excluded from being backed up by adding the `backup-enabled: "false"` annotation, like this:
 
-```
+```sh
 kubectl annotate pvc/<NAME> backup-enabled=false
 ```
 
@@ -78,4 +78,5 @@ Most likely this means that this PVC is backed by a CSI driver and the volume is
 - add more type annotations
 - improve logging (debug,info,warning,error)
 - setup pylint + mypy
+- automate building container image to GHCR
 - add license

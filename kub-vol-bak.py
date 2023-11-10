@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import os
 import json
+import random
+import string
 
 from typing import List, Dict, Optional
 
@@ -29,8 +31,13 @@ EXECUTION_ID = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 # Restic integration can only backup volumes that are mounted by a pod and not directly from the PVC. For orphan PVC/PV pairs (without running pods), some Velero users overcame this limitation running a staging pod (i.e. a busybox or alpine container with an infinite sleep) to mount these PVC/PV pairs prior taking a Velero backup.
 # https://velero.io/docs/v1.9/restic/
 
+def gen_random_chars(length: int) -> str:
+    letters = string.ascii_lowercase + string.digits
+    return ''.join(random.choices(letters, k=length))
+
 def run_backup_pod(pod_name, node_name, node_path, rbc):
     # TODO: implement resource requests/limits, nice/ionice
+    pod_name = f"backup-{rbc.hostname}-{gen_random_chars(5)}"
     pod = Pod({
         "apiVersion": "v1",
         "kind": "Pod",
@@ -137,15 +144,6 @@ class ResticBackupConfig:
     excludes: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
     metadata: Dict[str,str] = field(default_factory=dict)
-
-# https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html
-def get_backup_config(pvc):
-    pv = PersistentVolume.get(pvc.spec.volumeName)
-
-    return BackupConfig(
-        hostname = pvc.name,
-        # TODO: extract excludes from pvc annotations
-    )
 
 def backup_mounted_pvc_from_pod(pvc, pv, pod, rbc):
     node_name = pod.spec.nodeName
@@ -274,7 +272,6 @@ def backup_any_pvc(pvc):
     pv = get_pv_for_pvc(pvc)
     mounting_pod = get_pod_mounting_pvc(pvc)
 
-    # TODO: get excludes from PVC annotations
     restic_config = ResticBackupConfig(
         hostname = pvc.name,
         # repository = os.environ["RESTIC_REPOSITORY"],
@@ -312,13 +309,11 @@ def main(args):
         global DRY_RUN
         DRY_RUN = True
 
-    if args.skip_repo_init is True:
-        print("Warning: skipping repository initialization")
-    else:
-        initialize_repo()
-
     global BACKUP_NAMESPACE
     BACKUP_NAMESPACE = args.namespace
+
+    global BACKUP_SECRET_NAME
+    BACKUP_SECRET_NAME = args.config_secret
 
     global EXECUTION_ID
     EXECUTION_ID = args.execution_id
@@ -328,6 +323,11 @@ def main(args):
 
     global BACKUP_IMAGE
     BACKUP_IMAGE = args.image
+
+    if args.skip_repo_init is True:
+        print("Warning: skipping repository initialization")
+    else:
+        initialize_repo()
 
     pvc_label_selectors: Dict[str,str]= {}
     if args.pvc_label_selector:
@@ -343,7 +343,9 @@ def main(args):
         backup_all_pvcs(pvc_label_selectors)
 
         if args.cleanup:
-            for pod in kr8s.get("pods", namespace=BACKUP_NAMESPACE, label_selector=get_common_labels()):
+            pods = kr8s.get("pods", namespace=BACKUP_NAMESPACE, label_selector=get_common_labels())
+            print("Deleting completed backup pods:", ', '.join([pod.name for pod in pods]))
+            for pod in pods:
                 pod.delete()
     else:
         print(f"Error: unsupported action '{args.action}'")
