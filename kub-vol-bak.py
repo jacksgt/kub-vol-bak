@@ -6,7 +6,7 @@ __license__ = "MIT"
 
 import argparse
 from base64 import b64decode, b64encode
-import subprocess # see also: https://pypi.org/project/python-shell/
+import subprocess  # see also: https://pypi.org/project/python-shell/
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -25,61 +25,74 @@ DRY_RUN = False
 BACKUP_NAMESPACE = "kub-vol-bak"
 BACKUP_SECRET_NAME = "backup-credentials"
 BACKUP_IMAGE = "docker.io/restic/restic:0.16.0"
-VOLUME_BACKUP_TIMEOUT = 3600 # 1h
+VOLUME_BACKUP_TIMEOUT = 3600  # 1h
 EXECUTION_ID = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 # Restic integration can only backup volumes that are mounted by a pod and not directly from the PVC. For orphan PVC/PV pairs (without running pods), some Velero users overcame this limitation running a staging pod (i.e. a busybox or alpine container with an infinite sleep) to mount these PVC/PV pairs prior taking a Velero backup.
 # https://velero.io/docs/v1.9/restic/
 
+
 def gen_random_chars(length: int) -> str:
     letters = string.ascii_lowercase + string.digits
-    return ''.join(random.choices(letters, k=length))
+    return "".join(random.choices(letters, k=length))
+
 
 def run_backup_pod(pod_name, node_name, node_path, rbc):
     # TODO: implement resource requests/limits, nice/ionice
     pod_name = f"backup-{rbc.hostname}-{gen_random_chars(5)}"
-    pod = Pod({
-        "apiVersion": "v1",
-        "kind": "Pod",
-        "metadata": {
-            "name": pod_name,
-            "namespace": BACKUP_NAMESPACE,
-            "labels": get_common_labels(),
-        },
-        "spec": {
-            "serviceAccountName": "kub-vol-bak-runner", # TODO: make this configurable
-            "containers": [{
-                "name": "restic",
-                "image": BACKUP_IMAGE,
-                "volumeMounts": [
-                    {"name": "data", "mountPath": "/data", "readOnly": True},
-                    {"name": "tmp", "mountPath": "/tmp", "readOnly": False},
+    pod = Pod(
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": pod_name,
+                "namespace": BACKUP_NAMESPACE,
+                "labels": get_common_labels(),
+            },
+            "spec": {
+                "serviceAccountName": "kub-vol-bak-runner",  # TODO: make this configurable
+                "containers": [
+                    {
+                        "name": "restic",
+                        "image": BACKUP_IMAGE,
+                        "volumeMounts": [
+                            {"name": "data", "mountPath": "/data", "readOnly": True},
+                            {"name": "tmp", "mountPath": "/tmp", "readOnly": False},
+                        ],
+                        "envFrom": [
+                            {
+                                "secretRef": {"name": BACKUP_SECRET_NAME},
+                            },
+                        ],
+                        "env": [
+                            # show update messages every 5 minutes,
+                            # https://github.com/restic/restic/issues/2706#issuecomment-752182199
+                            {"name": "RESTIC_PROGRESS_FPS", "value": "0.0033"},
+                        ],
+                        "command": build_restic_cmd(rbc),
+                        "terminationMessagePolicy": "FallbackToLogsOnError",
+                    }
                 ],
-                "envFrom": [{ "secretRef": {"name": BACKUP_SECRET_NAME }, }, ],
-                "env": [
-                    # show update messages every 5 minutes,
-                    # https://github.com/restic/restic/issues/2706#issuecomment-752182199
-                    {"name": "RESTIC_PROGRESS_FPS", "value":"0.0033"},
+                "volumes": [
+                    {
+                        "name": "data",
+                        "hostPath": {"path": node_path, "type": "Directory"},
+                    },
+                    {"name": "tmp", "emptyDir": {}},
                 ],
-                "command": build_restic_cmd(rbc),
-                "terminationMessagePolicy": "FallbackToLogsOnError",
-            }],
-            "volumes": [
-                {"name": "data", "hostPath": {"path": node_path, "type": "Directory"}},
-                {"name": "tmp", "emptyDir": {}}
-            ],
-            # "terminationGracePeriodSeconds": 5,
-            "restartPolicy": "Never",
-            "activeDeadlineSeconds": VOLUME_BACKUP_TIMEOUT,
-            "enableServiceLinks": False,
-            "nodeName": node_name,
-            "automountServiceAccountToken": False,
-        },
-    })
+                # "terminationGracePeriodSeconds": 5,
+                "restartPolicy": "Never",
+                "activeDeadlineSeconds": VOLUME_BACKUP_TIMEOUT,
+                "enableServiceLinks": False,
+                "nodeName": node_name,
+                "automountServiceAccountToken": False,
+            },
+        }
+    )
 
     if DRY_RUN:
-       print(json.dumps(pod.raw))
-       return
+        print(json.dumps(pod.raw))
+        return
 
     # launch pod
     pod.create()
@@ -94,25 +107,37 @@ def run_backup_pod(pod_name, node_name, node_path, rbc):
     pod.refresh()
 
     duration = get_pod_duration(pod)
-    print(f"Pod {pod.name} terminated after {pretty_duration(duration.total_seconds())}: {pod.status.phase}") # FIXME
+    print(
+        f"Pod {pod.name} terminated after {pretty_duration(duration.total_seconds())}: {pod.status.phase}"
+    )  # FIXME
 
     def cleanup():
-       pod.delete()
+        pod.delete()
 
     return pod, cleanup
 
+
 def get_pod_duration(pod) -> timedelta:
     start_time = parse_k8s_timestamp(pod.status.startTime)
-    condition_ready = []
-    for x in pod.status.conditions:
-        if hasattr(x, 'type') and x['type'] == 'Ready' and hasattr(x, 'status') and x['status'] == 'False':
-            condition_ready.append(x)
-    end_time = parse_k8s_timestamp(condition_ready[0].lastTransitionTime)
-    return end_time - start_time
+    time_ready = [
+        x.lastTransitionTime
+        for x in pod.status.conditions
+        if hasattr(x, "type")
+        and x["type"] == "Ready"
+        and hasattr(x, "status")
+        and x["status"] == "False"
+    ]
+    if len(time_ready) > 0:
+        end_time = parse_k8s_timestamp(time_ready[0])
+        return end_time - start_time
+
+    return timedelta()
+
 
 def parse_k8s_timestamp(timestamp: str) -> datetime:
     # "2023-11-03T06:17:00Z"
-    return datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%SZ')
+    return datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+
 
 def pretty_duration(seconds_f: float):
     seconds = int(seconds_f)
@@ -128,6 +153,7 @@ def pretty_duration(seconds_f: float):
         return f"{minutes}m{seconds}s"
     else:
         return f"{seconds}s"
+
 
 # https://docs.python.org/3/library/dataclasses.html
 @dataclass
