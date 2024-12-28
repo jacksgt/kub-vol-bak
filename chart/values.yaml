@@ -13,11 +13,11 @@ fullnameOverride: ""
 
 restic:
   config:
-  # https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html
-  RESTIC_REPOSITORY: ""
-  RESTIC_PASSWORD: ""
-  # more values to be passed as environment variables to restic
-  # ...
+    # https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html
+    RESTIC_REPOSITORY: ""
+    RESTIC_PASSWORD: ""
+    # more values to be passed as environment variables to restic
+    # ...
 
   backup:
     schedule: "22 0 * * *"
@@ -35,7 +35,6 @@ restic:
       monthly: 0
       yearly: 0
       within: "30d"
-      tags: []
 
   # When data associated to deleted snapshots should be deleted
   prune:
@@ -47,6 +46,10 @@ restic:
   check:
     # TODO: implement me
     suspend: false
+
+# runs a special deployment with restic inside that allows you to perform operations on the repository backend
+debugToolbox:
+  enabled: false
 
 podAnnotations: {}
 

@@ -1,0 +1,40 @@
+{{- if .Values.debugToolbox.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kub-vol-bak.fullname" . }}-toolbox
+  labels:
+    {{- include "kub-vol-bak.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kub-vol-bak.labels" . | nindent 6 }}
+      app.kubernetes.io/component: toolbox
+  template:
+    metadata:
+      labels:
+        {{- include "kub-vol-bak.labels" . | nindent 8 }}
+        app.kubernetes.io/component: toolbox
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: toolbox
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["tail", "-f", "/dev/null"]
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        volumeMounts:
+          - name: tmp
+            mountPath: /tmp
+            readOnly: false
+        envFrom:
+          - secretRef:
+              name: {{ include "kub-vol-bak.fullname" . }}-restic-config
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

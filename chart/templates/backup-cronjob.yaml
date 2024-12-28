@@ -5,8 +5,8 @@ metadata:
   labels:
     {{- include "kub-vol-bak.labels" . | nindent 4 }}
 spec:
-  schedule: {{ .Values.backup.schedule | quote }}
-  suspend: {{ .Values.backup.suspend }}
+  schedule: {{ .Values.restic.backup.schedule | quote }}
+  suspend: {{ .Values.restic.backup.suspend }}
   concurrencyPolicy: Forbid
   jobTemplate:
     metadata:
@@ -14,6 +14,7 @@ spec:
       labels:
         {{- include "kub-vol-bak.labels" . | nindent 8 }}
     spec:
+      backoffLimit: 0 # do not retry this job
       template:
         metadata:
           {{- with .Values.podAnnotations }}

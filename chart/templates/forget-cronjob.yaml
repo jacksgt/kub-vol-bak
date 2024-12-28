@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "kub-vol-bak.fullname" . }}-foget
+  labels:
+    {{- include "kub-vol-bak.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.restic.forget.schedule | quote }}
+  suspend: {{ .Values.restic.forget.suspend }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    metadata:
+      creationTimestamp: null
+      labels:
+        {{- include "kub-vol-bak.labels" . | nindent 8 }}
+    spec:
+      backoffLimit: 0 # do not retry this job
+      template:
+        metadata:
+          {{- with .Values.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          restartPolicy: Never
+          serviceAccountName: {{ include "kub-vol-bak.fullname" . }}-controller
+          automountServiceAccountToken: true
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: "restic"
+              command:
+                - "kub-vol-bak"
+                - "forget"
+                - "--namespace={{ .Release.Namespace }}"
+                - "--config-secret={{ include "kub-vol-bak.fullname" . }}-restic-config"
+                - "--image={{ .Values.image.repository }}:{{ .Values.image.tag }}"
+                {{- range $key, $value := .Values.restic.forget.keepPolicy }}
+                - "--keep-{{.key}}={{.value}}"
+                {{- end }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
