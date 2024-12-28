@@ -71,6 +71,22 @@ Then, `restic` CLI can be used to restore the data locally: <https://restic.read
 
 Most likely this means that this PVC is backed by a CSI driver and the volume is currently not mounted on any node. To resolve the issue, spin up a simple pod that uses the PVC, which will force the kubelet to mount the volume on one node.
 
+## Development
+
+Set up development environment:
+
+```sh
+python3 -m venv venv
+
+source venv/bin/activate
+# for Fish shell, use instead:
+source venv/bin/activate.fish
+
+python3 -m ensurepip
+
+pip3 install -r requirements.txt
+```
+
 ## TODO
 
 - implement cleanup job
@@ -80,3 +96,4 @@ Most likely this means that this PVC is backed by a CSI driver and the volume is
 - setup pylint + mypy
 - automate building container image to GHCR
 - add license
+- notifications with apprise

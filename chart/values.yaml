@@ -11,16 +11,42 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-resticConfig:
+restic:
+  config:
   # https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html
   RESTIC_REPOSITORY: ""
   RESTIC_PASSWORD: ""
   # more values to be passed as environment variables to restic
   # ...
 
-backup:
-  schedule: "22 0 * * *"
-  suspend: false
+  backup:
+    schedule: "22 0 * * *"
+    suspend: false
+
+  forget:
+    suspend: false
+    schedule: "44 1 * * *"
+    # according to which policy snapshots should be retained
+    keepPolicy:
+      last: 0
+      hourly: 0
+      daily: 0
+      weekly: 0
+      monthly: 0
+      yearly: 0
+      within: "30d"
+      tags: []
+
+  # When data associated to deleted snapshots should be deleted
+  prune:
+    # TODO: implement me
+    suspend: false
+
+  # Regularly check (some of) the data stored in the remote repository for errors
+  # https://restic.readthedocs.io/en/stable/045_working_with_repos.html#checking-integrity-and-consistency
+  check:
+    # TODO: implement me
+    suspend: false
 
 podAnnotations: {}
 
