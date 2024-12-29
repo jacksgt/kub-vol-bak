@@ -26,7 +26,7 @@ restic:
 
   forget:
     suspend: false
-    schedule: "44 1 * * 1"
+    schedule: "44 3 * * 1"
     # according to which policy snapshots should be retained
     keepPolicy:
       last: 0
@@ -40,7 +40,7 @@ restic:
 
   # When data associated to deleted snapshots should be deleted
   prune:
-    schedule: "33 2 * * *"
+    schedule: "33 4 * * 1"
     suspend: false
     dryRun: false
 
@@ -51,6 +51,7 @@ restic:
     suspend: false
 
 # runs a special deployment with restic inside that allows you to perform operations on the repository backend
+# e.g. `kubectl exec -it deploy/kub-vol-bak-toolbox -- restic stats`
 debugToolbox:
   enabled: false
 

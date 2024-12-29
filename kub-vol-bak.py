@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 __author__ = "Jack Henschel"
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __license__ = "MIT"
 
 import argparse
@@ -40,11 +40,13 @@ def gen_random_chars(length: int) -> str:
     return "".join(random.choices(letters, k=length))
 
 
-def run_backup_pod(pod_name, node_name, node_path, rbc):
-    restic_cmd = build_restic_backup_cmd(rbc)
+def run_backup_pod(pod_name, node_name, node_path, rbc, pvc: PersistentVolumeClaim):
+    # TODO: move this logic back into the restic_backup function
+
+    restic_cmd = build_restic_backup_cmd(rbc, pvc)
 
     # TODO: implement resource requests/limits, nice/ionice
-    pod_name = f"backup-{rbc.hostname}-{gen_random_chars(5)}"
+    pod_name = f"backup-{pvc.namespace}-{pvc.name}-{gen_random_chars(5)}"
     labels = get_common_labels()
     labels["app.kubernetes.io/component"] = "backup"
     pod = base_pod(pod_name, BACKUP_NAMESPACE, labels, restic_cmd)
@@ -152,7 +154,13 @@ class ResticPruneConfig:
 def backup_mounted_pvc_from_pod(pvc, pv, pod, rbc):
     node_name = pod.spec.nodeName
     node_path = f"/var/lib/kubelet/pods/{pod.metadata.uid}/volumes/kubernetes.io~csi/{pv.name}/mount/"
-    run_backup_pod(f"backup-{pvc.name}", node_name, node_path, rbc)
+    run_backup_pod(
+        f"backup-{pvc.namespace}-{pvc.name}-{gen_random_chars(5)}",
+        node_name,
+        node_path,
+        rbc,
+        pvc,
+    )
 
 
 def build_restic_prune_cmd(config: ResticPruneConfig) -> str:
@@ -185,7 +193,7 @@ def restic_prune(config: ResticPruneConfig):
 def build_restic_forget_cmd(config: ResticForgetConfig, pvc) -> str:
     # TODO: write test
     restic_cmd: str = (
-        f"restic forget --tag namespace={pvc.namespace},persistentvolumeclaim={pvc.name}"
+        f"restic forget --verbose --group-by tags,paths --tag namespace={pvc.namespace},persistentvolumeclaim={pvc.name}"
     )
     if config.dry_run:
         restic_cmd += " --dry-run"
@@ -228,6 +236,8 @@ def base_pod(name: str, namespace: str, labels: list, cmd: str) -> Pod:
                         "volumeMounts": [
                             {"name": "tmp", "mountPath": "/tmp", "readOnly": False},
                         ],
+                        # TODO: set appropriate GOMAXPROCS
+                        # https://restic.readthedocs.io/en/stable/047_tuning_backup_parameters.html#cpu-usage
                         "envFrom": [
                             {
                                 "secretRef": {"name": BACKUP_SECRET_NAME},
@@ -333,7 +343,7 @@ def get_pvc_from_pv(pv) -> (str, str):
     return (pv.spec.claimRef.name, pv.spec.claimRef.namespace)
 
 
-def backup_hostpath_volume(pv, rbc, pvc_name):
+def backup_hostpath_volume(pv, rbc, pvc):
     path = str
     if hasattr(pv.spec, "hostPath"):
         path = pv.spec.hostPath.path
@@ -348,12 +358,23 @@ def backup_hostpath_volume(pv, rbc, pvc_name):
     )  # better use volume.kubernetes.io/selected-node annotation on pvc?
 
     # run pod on the node mounting hostPath
-    run_backup_pod(f"backup-{pvc_name}-{gen_random_chars(5)}", node_name, path, rbc)
+    run_backup_pod(
+        f"backup-{pvc.namespace}-{pvc.name}-{gen_random_chars(5)}",
+        node_name,
+        path,
+        rbc,
+        pvc,
+    )
 
 
-def build_restic_backup_cmd(bc) -> str:
+def build_restic_backup_cmd(bc, pvc) -> str:
     # https://restic.readthedocs.io/en/stable/040_backup.html
-    restic_cmd = f"restic backup --one-file-system --host {bc.hostname} --no-scan /data"
+    # We set the `--group-by` parameter so restic can easily identify the parent snapshot,
+    # since in our case the hostnames (pod names) vary over time.
+    # https://restic.readthedocs.io/en/stable/040_backup.html#file-change-detection
+    restic_cmd = (
+        f"restic backup --one-file-system --group-by tags,paths --no-scan /data"
+    )
     if bc.exclude_caches:
         restic_cmd += " --exclude-caches"
     for e in bc.excludes:
@@ -462,10 +483,10 @@ def restic_backup(pvc, restic_dry_run: bool):
 
     if hasattr(pv.spec, "local"):
         print(f"Backing up PVC {pvc.namespace}/{pvc.name} with 'local' strategy")
-        backup_hostpath_volume(pv, restic_config, pvc.name)
+        backup_hostpath_volume(pv, restic_config, pvc)
     elif hasattr(pv.spec, "hostPath"):
         print(f"Backing up PVC {pvc.namespace}/{pvc.name} with 'hostPath' strategy")
-        backup_hostpath_volume(pv, restic_config, pvc.name)
+        backup_hostpath_volume(pv, restic_config, pvc)
     elif mounting_pod:
         print(
             f"Backing up PVC {pvc.namespace}/{pvc.name} from running Pod {mounting_pod.name}"
