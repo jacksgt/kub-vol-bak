@@ -14,6 +14,7 @@ import os
 import json
 import random
 import string
+import sys
 
 from typing import List, Dict, Optional
 
@@ -390,7 +391,7 @@ def initialize_repo():
     # TODO: probably this should be run in the container as well so it uses the same restic version
 
     # https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html
-    print(f"Ensuring repository backend is initialized")
+    print("Ensuring repository backend is initialized")
     env = get_env_from_secret(BACKUP_SECRET_NAME, BACKUP_NAMESPACE)
     proc = subprocess.run(
         ["restic snapshots --no-cache"],
@@ -460,7 +461,6 @@ def restic_backup(pvc, restic_dry_run: bool):
 
     restic_config = ResticBackupConfig(
         dry_run=restic_dry_run,
-        hostname=pvc.name,
         # repository = os.environ["RESTIC_REPOSITORY"],
         # password = os.environ["RESTIC_PASSWORD"],
         tags=[
@@ -547,7 +547,7 @@ def main(args):
     if args.action == "backup":
         # run restic backup for each PVC
         for pvc in get_matching_pvcs(pvc_label_selectors):
-            restic_backup(config, pvc, args.restic_dry_run)
+            restic_backup(pvc, args.restic_dry_run)
 
         if args.cleanup:
             pods = kr8s.get(
@@ -581,7 +581,6 @@ def main(args):
 
 
 if __name__ == "__main__":
-    """This is executed when run from the command line"""
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -700,8 +699,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s (version {version})".format(version=__version__),
+        version=f"%(prog)s (version {__version__})",
     )
 
-    args = parser.parse_args()
-    main(args)
+    main(parser.parse_args())
