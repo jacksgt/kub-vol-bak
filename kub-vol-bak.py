@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 __author__ = "Jack Henschel"
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __license__ = "MIT"
 
 import argparse
@@ -45,81 +45,25 @@ def run_backup_pod(pod_name, node_name, node_path, rbc):
 
     # TODO: implement resource requests/limits, nice/ionice
     pod_name = f"backup-{rbc.hostname}-{gen_random_chars(5)}"
-    pod = Pod(
-        {
-            "apiVersion": "v1",
-            "kind": "Pod",
-            "metadata": {
-                "name": pod_name,
-                "namespace": BACKUP_NAMESPACE,
-                "labels": get_common_labels(),
-            },
-            "spec": {
-                "serviceAccountName": "kub-vol-bak-runner",  # TODO: make this configurable
-                "containers": [
-                    {
-                        "name": "restic",
-                        "image": BACKUP_IMAGE,
-                        "volumeMounts": [
-                            {"name": "data", "mountPath": "/data", "readOnly": True},
-                            {"name": "tmp", "mountPath": "/tmp", "readOnly": False},
-                        ],
-                        "envFrom": [
-                            {
-                                "secretRef": {"name": BACKUP_SECRET_NAME},
-                            },
-                        ],
-                        "env": [
-                            # show update messages every 5 minutes,
-                            # https://github.com/restic/restic/issues/2706#issuecomment-752182199
-                            {"name": "RESTIC_PROGRESS_FPS", "value": "0.0033"},
-                        ],
-                        "command": [
-                            "sh",
-                            "-cex",
-                            restic_cmd,
-                        ],
-                        "terminationMessagePolicy": "FallbackToLogsOnError",
-                    }
-                ],
-                "volumes": [
-                    {
-                        "name": "data",
-                        "hostPath": {"path": node_path, "type": "Directory"},
-                    },
-                    {"name": "tmp", "emptyDir": {}},
-                ],
-                # "terminationGracePeriodSeconds": 5,
-                "restartPolicy": "Never",
-                "activeDeadlineSeconds": VOLUME_BACKUP_TIMEOUT,
-                "enableServiceLinks": False,
-                "nodeName": node_name,
-                "automountServiceAccountToken": False,
-            },
-        }
+    labels = get_common_labels()
+    labels["app.kubernetes.io/component"] = "backup"
+    pod = base_pod(pod_name, BACKUP_NAMESPACE, labels, restic_cmd)
+    pod.spec.containers[0].volumeMounts.append(
+        {"name": "data", "mountPath": "/data", "readOnly": True},
     )
+    pod.spec.volumes.append(
+        {
+            "name": "data",
+            "hostPath": {"path": node_path, "type": "Directory"},
+        },
+    )
+    pod.spec.nodeName = node_name
 
     if DRY_RUN:
         print(json.dumps(pod.raw))
         return
 
-    # launch pod
-    pod.create()
-
-    time.sleep(1)
-    pod.wait("condition=Ready=true")
-
-    for line in pod.logs(follow=True, timeout=None):
-        print("> ", line)
-
-    pod.wait("condition=Ready=false")
-    time.sleep(1)
-    pod.refresh()
-
-    duration = get_pod_duration(pod)
-    print(
-        f"Pod {pod.name} terminated after {pretty_duration(duration.total_seconds())}: {pod.status.phase}"
-    )  # FIXME
+    run_pod(pod)
 
     def cleanup():
         pod.delete()
@@ -200,10 +144,42 @@ class ResticForgetConfig:
     # keep_tags: List[str]
 
 
+@dataclass
+class ResticPruneConfig:
+    dry_run: bool
+
+
 def backup_mounted_pvc_from_pod(pvc, pv, pod, rbc):
     node_name = pod.spec.nodeName
     node_path = f"/var/lib/kubelet/pods/{pod.metadata.uid}/volumes/kubernetes.io~csi/{pv.name}/mount/"
     run_backup_pod(f"backup-{pvc.name}", node_name, node_path, rbc)
+
+
+def build_restic_prune_cmd(config: ResticPruneConfig) -> str:
+    restic_cmd: str = f"restic prune"
+    if config.dry_run:
+        restic_cmd += " --dry-run"
+
+    return restic_cmd
+
+
+def restic_prune(config: ResticPruneConfig):
+    restic_cmd = build_restic_prune_cmd(config)
+
+    labels = get_common_labels()
+    labels["app.kubernetes.io/component"] = "prune"
+    pod = base_pod(
+        f"prune-{gen_random_chars(5)}",
+        BACKUP_NAMESPACE,
+        labels,
+        restic_cmd,
+    )
+
+    if DRY_RUN:
+        print(json.dumps(pod.raw))
+        return
+
+    run_pod(pod)
 
 
 def build_restic_forget_cmd(config: ResticForgetConfig, pvc) -> str:
@@ -233,18 +209,15 @@ def build_restic_forget_cmd(config: ResticForgetConfig, pvc) -> str:
     return restic_cmd
 
 
-def restic_forget(config: ResticForgetConfig, pvc):
-    restic_cmd = build_restic_forget_cmd(config, pvc)
-
-    pod_name = f"forget-{pvc.name}-{gen_random_chars(5)}"
-    pod = Pod(
+def base_pod(name: str, namespace: str, labels: list, cmd: str) -> Pod:
+    return Pod(
         {
             "apiVersion": "v1",
             "kind": "Pod",
             "metadata": {
-                "name": pod_name,
-                "namespace": BACKUP_NAMESPACE,
-                "labels": get_common_labels(),
+                "name": name,
+                "namespace": namespace,
+                "labels": labels,
             },
             "spec": {
                 "serviceAccountName": "kub-vol-bak-runner",  # TODO: make this configurable
@@ -265,7 +238,7 @@ def restic_forget(config: ResticForgetConfig, pvc):
                             # https://github.com/restic/restic/issues/2706#issuecomment-752182199
                             {"name": "RESTIC_PROGRESS_FPS", "value": "0.0033"},
                         ],
-                        "command": ["sh", "-cex", restic_cmd],
+                        "command": ["sh", "-cex", cmd],
                         "terminationMessagePolicy": "FallbackToLogsOnError",
                     }
                 ],
@@ -281,9 +254,25 @@ def restic_forget(config: ResticForgetConfig, pvc):
         }
     )
 
+
+def restic_forget(config: ResticForgetConfig, pvc):
+    restic_cmd = build_restic_forget_cmd(config, pvc)
+
+    pod_name = f"forget-{pvc.name}-{gen_random_chars(5)}"
+    labels = get_common_labels()
+    labels["app.kubernetes.io/component"] = "forget"
+
+    pod = base_pod(pod_name, BACKUP_NAMESPACE, labels, restic_cmd)
+
     if DRY_RUN:
         print(json.dumps(pod.raw))
         return
+
+    run_pod(pod)
+
+
+def run_pod(pod: Pod):
+    """Creates a pod, prints the logs to stdout and waits for its completion"""
 
     # launch pod
     pod.create()
@@ -302,7 +291,7 @@ def restic_forget(config: ResticForgetConfig, pvc):
     duration = get_pod_duration(pod)
     print(
         f"Pod {pod.name} terminated after {pretty_duration(duration.total_seconds())}: {pod.status.phase}"
-    )  # FIXME
+    )
 
 
 # wrapper around kubectl because kr8s does not support pod exec: https://github.com/kr8s-org/kr8s/issues/169
@@ -574,6 +563,14 @@ def main(args):
         # run restic forget for each PVC
         for pvc in get_matching_pvcs(pvc_label_selectors):
             restic_forget(config, pvc)
+
+    elif args.action == "prune":
+        config = ResticPruneConfig(
+            dry_run=args.restic_dry_run,
+        )
+
+        # run pruning on the entire repository
+        restic_prune(config)
 
     else:
         print(f"Error: unsupported action '{args.action}'")

@@ -22,10 +22,11 @@ restic:
   backup:
     schedule: "22 0 * * *"
     suspend: false
+    dryRun: false
 
   forget:
     suspend: false
-    schedule: "44 1 * * *"
+    schedule: "44 1 * * 1"
     # according to which policy snapshots should be retained
     keepPolicy:
       last: 0
@@ -35,11 +36,13 @@ restic:
       monthly: 0
       yearly: 0
       within: "30d"
+    dryRun: false
 
   # When data associated to deleted snapshots should be deleted
   prune:
-    # TODO: implement me
+    schedule: "33 2 * * *"
     suspend: false
+    dryRun: false
 
   # Regularly check (some of) the data stored in the remote repository for errors
   # https://restic.readthedocs.io/en/stable/045_working_with_repos.html#checking-integrity-and-consistency

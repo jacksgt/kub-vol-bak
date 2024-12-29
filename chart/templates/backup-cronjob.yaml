@@ -4,6 +4,7 @@ metadata:
   name: {{ include "kub-vol-bak.fullname" . }}-backup
   labels:
     {{- include "kub-vol-bak.labels" . | nindent 4 }}
+    app.kubernetes.io/component: "backup"
 spec:
   schedule: {{ .Values.restic.backup.schedule | quote }}
   suspend: {{ .Values.restic.backup.suspend }}
@@ -13,6 +14,7 @@ spec:
       creationTimestamp: null
       labels:
         {{- include "kub-vol-bak.labels" . | nindent 8 }}
+        app.kubernetes.io/component: "backup"
     spec:
       backoffLimit: 0 # do not retry this job
       template:
@@ -39,6 +41,9 @@ spec:
                 - "--namespace={{ .Release.Namespace }}"
                 - "--config-secret={{ include "kub-vol-bak.fullname" . }}-restic-config"
                 - "--image={{ .Values.image.repository }}:{{ .Values.image.tag }}"
+                {{- if .Values.restic.backup.dryRun }}
+                - "--restic-dry-run"
+                {{- end }}
               securityContext:
                 {{- toYaml .Values.securityContext | nindent 16 }}
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

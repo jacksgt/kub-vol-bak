@@ -1,20 +1,20 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "kub-vol-bak.fullname" . }}-forget
+  name: {{ include "kub-vol-bak.fullname" . }}-prune
   labels:
     {{- include "kub-vol-bak.labels" . | nindent 4 }}
-    app.kubernetes.io/component: "forget"
+    app.kubernetes.io/component: "prune"
 spec:
-  schedule: {{ .Values.restic.forget.schedule | quote }}
-  suspend: {{ .Values.restic.forget.suspend }}
+  schedule: {{ .Values.restic.prune.schedule | quote }}
+  suspend: {{ .Values.restic.prune.suspend }}
   concurrencyPolicy: Forbid
   jobTemplate:
     metadata:
       creationTimestamp: null
       labels:
         {{- include "kub-vol-bak.labels" . | nindent 8 }}
-        app.kubernetes.io/component: "forget"
+        app.kubernetes.io/component: "prune"
     spec:
       backoffLimit: 0 # do not retry this job
       template:
@@ -37,13 +37,10 @@ spec:
             - name: "restic"
               command:
                 - "kub-vol-bak"
-                - "forget"
+                - "prune"
                 - "--namespace={{ .Release.Namespace }}"
                 - "--config-secret={{ include "kub-vol-bak.fullname" . }}-restic-config"
                 - "--image={{ .Values.image.repository }}:{{ .Values.image.tag }}"
-                {{- range $key, $value := .Values.restic.forget.keepPolicy }}
-                - "--keep-{{$key}}={{$value}}"
-                {{- end }}
                 {{- if .Values.restic.forget.dryRun }}
                 - "--restic-dry-run"
                 {{- end }}
